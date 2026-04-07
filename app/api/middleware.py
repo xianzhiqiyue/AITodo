@@ -1,10 +1,13 @@
 import time
+import uuid
 from collections import defaultdict, deque
 
 import structlog
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from structlog.contextvars import bind_contextvars, clear_contextvars
 
+from app.config import get_settings
 from app.errors import AppError, ErrorCode
 
 logger = structlog.get_logger()
@@ -40,15 +43,32 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        start = time.monotonic()
-        response = await call_next(request)
-        duration_ms = round((time.monotonic() - start) * 1000, 2)
+        clear_contextvars()
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        request.state.request_id = request_id
+        bind_contextvars(request_id=request_id)
 
-        logger.info(
-            "http_request",
-            method=request.method,
-            path=str(request.url.path),
-            status_code=response.status_code,
-            duration_ms=duration_ms,
-        )
-        return response
+        start = time.monotonic()
+        response: Response | None = None
+        try:
+            response = await call_next(request)
+            duration_ms = round((time.monotonic() - start) * 1000, 2)
+            logger.info(
+                "http_response",
+                method=request.method,
+                path=str(request.url.path),
+                duration_ms=duration_ms,
+                status_code=response.status_code,
+            )
+            if duration_ms >= get_settings().slow_request_threshold_ms:
+                logger.warning(
+                    "slow_request",
+                    method=request.method,
+                    path=str(request.url.path),
+                    duration_ms=duration_ms,
+                    status_code=response.status_code,
+                )
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            clear_contextvars()

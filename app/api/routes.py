@@ -4,19 +4,53 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_task_service, verify_api_key
+from app.api.deps import (
+    get_alert_delivery_service,
+    get_reminder_service,
+    get_task_intake_service,
+    get_task_parsing_service,
+    get_task_planning_service,
+    get_task_service,
+    get_workspace_service,
+    verify_api_key,
+)
+from app.config import Settings, get_settings
 from app.database import get_async_session
 from app.schemas import (
+    AlertListResponse,
+    ApplySuggestionRequest,
+    DispatchAlertsRequest,
+    DispatchAlertsResponse,
     DecomposeRequest,
     DecomposeResponse,
+    DecomposeSuggestionResponse,
     DeleteResponse,
     HealthResponse,
+    ParseAndCreateTaskRequest,
+    ParseAndCreateTaskResponse,
+    ParseTaskRequest,
+    ParseTaskResponse,
+    ReadyTaskListResponse,
+    ReminderScanResponse,
+    TaskCommentCreate,
+    TaskCommentListResponse,
+    TaskCommentResponse,
+    TaskDependencyCreate,
+    TaskDependencyListResponse,
+    TaskDependencyResponse,
     TaskCreate,
     TaskListResponse,
     TaskResponse,
     TaskUpdate,
+    WorkspaceDashboardResponse,
 )
+from app.services.notification_service import AlertDeliveryService
+from app.services.task_intake_service import TaskIntakeService
+from app.services.task_parsing_service import TaskParsingService
+from app.services.reminder_service import ReminderService
+from app.services.task_planning_service import TaskPlanningService
 from app.services.task_service import TaskService
+from app.services.workspace_service import WorkspaceService
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(verify_api_key)])
 
@@ -30,6 +64,7 @@ async def create_task(
 
 
 @router.put("/tasks/{task_id}", response_model=TaskResponse)
+@router.patch("/tasks/{task_id}", response_model=TaskResponse)
 async def update_task(
     task_id: uuid.UUID,
     data: TaskUpdate,
@@ -84,15 +119,189 @@ async def decompose_task(
     return await svc.decompose_task(task_id, data.sub_tasks)
 
 
+@router.get("/tasks/{task_id}/decompose/suggestions", response_model=DecomposeSuggestionResponse)
+async def suggest_task_decomposition(
+    task_id: uuid.UUID,
+    svc: TaskPlanningService = Depends(get_task_planning_service),
+):
+    return await svc.suggest_decomposition(task_id)
+
+
+@router.post("/tasks/{task_id}/decompose/apply-suggestions", response_model=DecomposeResponse)
+async def apply_task_suggestions(
+    task_id: uuid.UUID,
+    data: ApplySuggestionRequest,
+    svc: TaskPlanningService = Depends(get_task_planning_service),
+):
+    return await svc.apply_suggestions(task_id, data.indices)
+
+
+@router.post("/tasks/{task_id}/dependencies", response_model=TaskDependencyResponse, status_code=201)
+async def add_task_dependency(
+    task_id: uuid.UUID,
+    data: TaskDependencyCreate,
+    svc: TaskService = Depends(get_task_service),
+):
+    return await svc.add_dependency(task_id, data.depends_on_task_id)
+
+
+@router.get("/tasks/{task_id}/dependencies", response_model=TaskDependencyListResponse)
+async def list_task_dependencies(
+    task_id: uuid.UUID,
+    svc: TaskService = Depends(get_task_service),
+):
+    return await svc.list_dependencies(task_id)
+
+
+@router.delete("/tasks/{task_id}/dependencies/{dependency_id}", response_model=DeleteResponse)
+async def delete_task_dependency(
+    task_id: uuid.UUID,
+    dependency_id: uuid.UUID,
+    svc: TaskService = Depends(get_task_service),
+):
+    return await svc.remove_dependency(task_id, dependency_id)
+
+
+@router.post("/tasks/{task_id}/comments", response_model=TaskCommentResponse, status_code=201)
+async def add_task_comment(
+    task_id: uuid.UUID,
+    data: TaskCommentCreate,
+    svc: TaskService = Depends(get_task_service),
+):
+    return await svc.add_comment(task_id, data)
+
+
+@router.get("/tasks/{task_id}/timeline", response_model=TaskCommentListResponse)
+async def list_task_timeline(
+    task_id: uuid.UUID,
+    svc: TaskService = Depends(get_task_service),
+):
+    return await svc.list_comments(task_id)
+
+
+@router.post("/tasks/parse", response_model=ParseTaskResponse)
+async def parse_task(
+    data: ParseTaskRequest,
+    svc: TaskParsingService = Depends(get_task_parsing_service),
+):
+    return await svc.parse_text(data.text)
+
+
+@router.post("/tasks/parse-and-create", response_model=ParseAndCreateTaskResponse)
+async def parse_and_create_task(
+    data: ParseAndCreateTaskRequest,
+    svc: TaskIntakeService = Depends(get_task_intake_service),
+):
+    return await svc.parse_and_create(
+        text=data.text,
+        parent_id=data.parent_id,
+        min_confidence=data.min_confidence,
+        force_create=data.force_create,
+        selected_draft_index=data.selected_draft_index,
+        override=data.override,
+    )
+
+
+@router.get("/workspace/ready-to-start", response_model=ReadyTaskListResponse)
+async def list_ready_to_start_tasks(
+    top_n: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    tags: list[str] | None = Query(None),
+    svc: TaskService = Depends(get_task_service),
+):
+    return await svc.list_ready_tasks(top_n=top_n, offset=offset, tags=tags)
+
+
+@router.get("/workspace/today", response_model=TaskListResponse)
+async def list_today_tasks(
+    top_n: int = Query(20, ge=1, le=100),
+    svc: TaskService = Depends(get_task_service),
+):
+    return await svc.list_today_tasks(top_n=top_n)
+
+
+@router.get("/workspace/overdue", response_model=TaskListResponse)
+async def list_overdue_tasks(
+    top_n: int = Query(20, ge=1, le=100),
+    svc: TaskService = Depends(get_task_service),
+):
+    return await svc.list_overdue_tasks(top_n=top_n)
+
+
+@router.get("/workspace/blocked", response_model=TaskListResponse)
+async def list_blocked_tasks(
+    top_n: int = Query(20, ge=1, le=100),
+    svc: TaskService = Depends(get_task_service),
+):
+    return await svc.list_blocked_tasks(top_n=top_n)
+
+
+@router.get("/workspace/recently-updated", response_model=TaskListResponse)
+async def list_recently_updated_tasks(
+    top_n: int = Query(20, ge=1, le=100),
+    svc: TaskService = Depends(get_task_service),
+):
+    return await svc.list_recently_updated_tasks(top_n=top_n)
+
+
+@router.get("/workspace/alerts", response_model=AlertListResponse)
+async def list_workspace_alerts(
+    top_n: int = Query(20, ge=1, le=100),
+    svc: TaskService = Depends(get_task_service),
+):
+    return await svc.list_alerts(top_n=top_n)
+
+
+@router.get("/workspace/dashboard", response_model=WorkspaceDashboardResponse)
+async def get_workspace_dashboard(
+    top_n: int = Query(10, ge=1, le=100),
+    svc: WorkspaceService = Depends(get_workspace_service),
+):
+    return await svc.get_dashboard(top_n=top_n)
+
+
+@router.post("/reminders/scan", response_model=ReminderScanResponse)
+async def scan_reminders(
+    top_n: int = Query(20, ge=1, le=100),
+    svc: ReminderService = Depends(get_reminder_service),
+):
+    return await svc.scan(top_n=top_n)
+
+
+@router.post("/notifications/dispatch-alerts", response_model=DispatchAlertsResponse)
+async def dispatch_alerts(
+    data: DispatchAlertsRequest,
+    svc: AlertDeliveryService = Depends(get_alert_delivery_service),
+):
+    return await svc.dispatch_alerts(top_n=data.top_n, force=data.force)
+
+
 health_router = APIRouter()
 
 
 @health_router.get("/health", response_model=HealthResponse)
-async def health_check(session: AsyncSession = Depends(get_async_session)):
+async def health_check(
+    session: AsyncSession = Depends(get_async_session),
+    settings: Settings = Depends(get_settings),
+):
     db_status = "connected"
+    migration_status = "unknown"
     try:
         await session.execute(text("SELECT 1"))
+        try:
+            revision = (await session.execute(text("SELECT version_num FROM alembic_version"))).scalar_one_or_none()
+            migration_status = revision or "missing"
+        except Exception:
+            migration_status = "missing"
     except Exception:
         db_status = "disconnected"
+        migration_status = "unknown"
 
-    return HealthResponse(status="healthy", database=db_status, version="1.0.0")
+    return HealthResponse(
+        status="healthy" if db_status == "connected" else "degraded",
+        database=db_status,
+        migration=migration_status,
+        parsing_service="configured" if settings.parsing_api_key else "heuristic_only",
+        embedding_service="configured" if settings.embedding_api_key else "disabled",
+        version=settings.app_version,
+    )

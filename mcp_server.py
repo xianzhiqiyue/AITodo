@@ -12,19 +12,90 @@ from mcp.server.fastmcp import FastMCP
 
 from app.config import get_settings
 from app.database import async_session_factory
+from app.errors import AppError
 from app.services.embedding_service import EmbeddingService
+from app.services.notification_service import AlertDeliveryService, WebhookNotificationProvider
+from app.services.reminder_service import ReminderService
+from app.services.task_intake_service import TaskIntakeService
+from app.services.task_parsing_service import TaskParsingService
+from app.services.task_planning_service import TaskPlanningService
 from app.services.task_service import TaskService
-from app.schemas import SubTaskInput, TaskCreate, TaskUpdate
+from app.services.workspace_service import WorkspaceService
+from app.schemas import SubTaskInput, TaskCommentCreate, TaskCreate, TaskDraftOverride, TaskUpdate
 
 mcp = FastMCP("ai-todo")
 
 settings = get_settings()
 _embedding_svc = EmbeddingService(settings) if settings.embedding_api_key else None
+_task_parsing_svc = TaskParsingService(settings)
 
 
 async def _get_service() -> TaskService:
     session = async_session_factory()
-    return TaskService(session=session, embedding_service=_embedding_svc)
+    return TaskService(
+        session=session,
+        embedding_service=_embedding_svc,
+        timezone_name=settings.parsing_timezone,
+    )
+
+
+async def _get_intake_service() -> TaskIntakeService:
+    session = async_session_factory()
+    task_service = TaskService(
+        session=session,
+        embedding_service=_embedding_svc,
+        timezone_name=settings.parsing_timezone,
+    )
+    return TaskIntakeService(task_service=task_service, parsing_service=_task_parsing_svc)
+
+
+async def _get_planning_service() -> TaskPlanningService:
+    session = async_session_factory()
+    task_service = TaskService(
+        session=session,
+        embedding_service=_embedding_svc,
+        timezone_name=settings.parsing_timezone,
+    )
+    return TaskPlanningService(task_service=task_service)
+
+
+async def _get_reminder_service() -> ReminderService:
+    session = async_session_factory()
+    task_service = TaskService(
+        session=session,
+        embedding_service=_embedding_svc,
+        timezone_name=settings.parsing_timezone,
+    )
+    return ReminderService(task_service=task_service)
+
+
+async def _get_workspace_service() -> WorkspaceService:
+    session = async_session_factory()
+    task_service = TaskService(
+        session=session,
+        embedding_service=_embedding_svc,
+        timezone_name=settings.parsing_timezone,
+    )
+    return WorkspaceService(task_service=task_service)
+
+
+async def _get_alert_delivery_service() -> AlertDeliveryService:
+    session = async_session_factory()
+    task_service = TaskService(
+        session=session,
+        embedding_service=_embedding_svc,
+        timezone_name=settings.parsing_timezone,
+    )
+    provider = (
+        WebhookNotificationProvider(settings.notification_webhook_url)
+        if settings.notification_webhook_url
+        else None
+    )
+    return AlertDeliveryService(
+        task_service=task_service,
+        provider=provider,
+        repeat_window_hours=settings.notification_repeat_window_hours,
+    )
 
 
 def _serialize(obj) -> str:
@@ -37,7 +108,7 @@ async def upsert_task(
     id: str | None = None,
     description: str | None = None,
     status: str | None = None,
-    priority: int = 3,
+    priority: int | None = None,
     due_at: str | None = None,
     parent_id: str | None = None,
     tags: list[str] | None = None,
@@ -73,7 +144,7 @@ async def upsert_task(
                     title=title,
                     description=description,
                     status=status,
-                    priority=priority,
+                    priority=priority or 3,
                     due_at=parsed_due,
                     parent_id=parsed_parent,
                     tags=tags or [],
@@ -82,6 +153,8 @@ async def upsert_task(
                 ),
             )
         return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
     finally:
         await svc.session.close()
 
@@ -107,6 +180,8 @@ async def get_task_context(
             parent_id=uuid.UUID(parent_id) if parent_id else None,
         )
         return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
     finally:
         await svc.session.close()
 
@@ -118,6 +193,8 @@ async def delete_task(task_id: str, cascade: bool = False) -> str:
     try:
         result = await svc.delete_task(uuid.UUID(task_id), cascade=cascade)
         return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
     finally:
         await svc.session.close()
 
@@ -137,8 +214,267 @@ async def decompose_task(task_id: str, sub_tasks: list[dict]) -> str:
             ))
         result = await svc.decompose_task(uuid.UUID(task_id), parsed_subs)
         return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
     finally:
         await svc.session.close()
+
+
+@mcp.tool()
+async def add_task_dependency(task_id: str, depends_on_task_id: str) -> str:
+    """为任务添加依赖关系，表示 task_id 必须等待 depends_on_task_id 完成后才能执行。"""
+    svc = await _get_service()
+    try:
+        result = await svc.add_dependency(uuid.UUID(task_id), uuid.UUID(depends_on_task_id))
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def list_task_dependencies(task_id: str) -> str:
+    """列出指定任务的依赖关系。"""
+    svc = await _get_service()
+    try:
+        result = await svc.list_dependencies(uuid.UUID(task_id))
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def remove_task_dependency(task_id: str, dependency_id: str) -> str:
+    """删除指定任务的一条依赖关系。"""
+    svc = await _get_service()
+    try:
+        result = await svc.remove_dependency(uuid.UUID(task_id), uuid.UUID(dependency_id))
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def get_ready_to_start_tasks(
+    top_n: int = 20,
+    offset: int = 0,
+    tags: list[str] | None = None,
+) -> str:
+    """获取当前没有未完成依赖、可以直接启动的任务列表。"""
+    svc = await _get_service()
+    try:
+        result = await svc.list_ready_tasks(top_n=top_n, offset=offset, tags=tags)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def add_task_comment(
+    task_id: str,
+    content: str,
+    type: str = "comment",
+    meta_data: dict | None = None,
+) -> str:
+    """为任务添加评论、进展、失败记录或系统备注。"""
+    svc = await _get_service()
+    try:
+        result = await svc.add_comment(
+            uuid.UUID(task_id),
+            TaskCommentCreate(type=type, content=content, meta_data=meta_data),
+        )
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def get_task_timeline(task_id: str) -> str:
+    """获取任务评论与系统事件时间线。"""
+    svc = await _get_service()
+    try:
+        result = await svc.list_comments(uuid.UUID(task_id))
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def get_workspace_today(top_n: int = 20) -> str:
+    """获取今天到期的任务。"""
+    svc = await _get_service()
+    try:
+        result = await svc.list_today_tasks(top_n=top_n)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def get_workspace_overdue(top_n: int = 20) -> str:
+    """获取已逾期且未完成的任务。"""
+    svc = await _get_service()
+    try:
+        result = await svc.list_overdue_tasks(top_n=top_n)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def get_workspace_blocked(top_n: int = 20) -> str:
+    """获取当前处于 blocked 状态的任务。"""
+    svc = await _get_service()
+    try:
+        result = await svc.list_blocked_tasks(top_n=top_n)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def get_workspace_recently_updated(top_n: int = 20) -> str:
+    """获取最近更新的任务。"""
+    svc = await _get_service()
+    try:
+        result = await svc.list_recently_updated_tasks(top_n=top_n)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def get_workspace_alerts(top_n: int = 20) -> str:
+    """获取逾期、即将到期和长期阻塞任务告警。"""
+    svc = await _get_service()
+    try:
+        result = await svc.list_alerts(top_n=top_n)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def get_workspace_dashboard(top_n: int = 10) -> str:
+    """获取工作台总览，包括 today、overdue、blocked、ready-to-start、recently-updated 和 alerts。"""
+    svc = await _get_workspace_service()
+    try:
+        result = await svc.get_dashboard(top_n=top_n)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
+
+
+@mcp.tool()
+async def suggest_task_decomposition(task_id: str) -> str:
+    """为一个任务生成建议的拆解子任务。"""
+    svc = await _get_planning_service()
+    try:
+        result = await svc.suggest_decomposition(uuid.UUID(task_id))
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
+
+
+@mcp.tool()
+async def apply_task_suggestions(task_id: str, indices: list[int]) -> str:
+    """选择建议拆解项并创建为子任务。"""
+    svc = await _get_planning_service()
+    try:
+        result = await svc.apply_suggestions(uuid.UUID(task_id), indices)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
+
+
+@mcp.tool()
+async def scan_reminders(top_n: int = 20) -> str:
+    """执行一次提醒扫描，返回当前告警快照。"""
+    svc = await _get_reminder_service()
+    try:
+        result = await svc.scan(top_n=top_n)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
+
+
+@mcp.tool()
+async def dispatch_alert_notifications(top_n: int = 20, force: bool = False) -> str:
+    """将当前 alerts 主动发送到已配置的 webhook 渠道。"""
+    svc = await _get_alert_delivery_service()
+    try:
+        result = await svc.dispatch_alerts(top_n=top_n, force=force)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
+
+
+@mcp.tool()
+async def parse_task_input(text: str) -> str:
+    """将自然语言任务描述解析为结构化任务草稿，供 AI 在正式入库前预览和确认。"""
+    try:
+        result = await _task_parsing_svc.parse_text(text)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+
+
+@mcp.tool()
+async def parse_and_create_task(
+    text: str,
+    parent_id: str | None = None,
+    min_confidence: float = 0.6,
+    force_create: bool = False,
+    selected_draft_index: int = 0,
+    override: dict | None = None,
+) -> str:
+    """先将自然语言解析为任务草稿，再按置信度阈值决定是否正式入库。"""
+    svc = await _get_intake_service()
+    try:
+        result = await svc.parse_and_create(
+            text=text,
+            parent_id=uuid.UUID(parent_id) if parent_id else None,
+            min_confidence=min_confidence,
+            force_create=force_create,
+            selected_draft_index=selected_draft_index,
+            override=TaskDraftOverride(**override) if override else None,
+        )
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
 
 
 if __name__ == "__main__":

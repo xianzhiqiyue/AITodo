@@ -157,3 +157,87 @@ class Task(Base):
     parent: Mapped["Task | None"] = relationship(
         "Task", back_populates="children", remote_side=[id]
     )
+    dependencies: Mapped[list["TaskDependency"]] = relationship(
+        "TaskDependency",
+        back_populates="task",
+        foreign_keys="TaskDependency.task_id",
+        cascade="all, delete-orphan",
+    )
+    dependent_links: Mapped[list["TaskDependency"]] = relationship(
+        "TaskDependency",
+        back_populates="depends_on_task",
+        foreign_keys="TaskDependency.depends_on_task_id",
+        cascade="all, delete-orphan",
+    )
+
+
+class TaskDependency(Base):
+    __tablename__ = "task_dependencies"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        FlexibleUUID(), primary_key=True, default=uuid.uuid4
+    )
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        FlexibleUUID(), ForeignKey("tasks.id"), nullable=False
+    )
+    depends_on_task_id: Mapped[uuid.UUID] = mapped_column(
+        FlexibleUUID(), ForeignKey("tasks.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    task: Mapped["Task"] = relationship(
+        "Task",
+        back_populates="dependencies",
+        foreign_keys=[task_id],
+    )
+    depends_on_task: Mapped["Task"] = relationship(
+        "Task",
+        back_populates="dependent_links",
+        foreign_keys=[depends_on_task_id],
+    )
+
+
+class TaskComment(Base):
+    __tablename__ = "task_comments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        FlexibleUUID(), primary_key=True, default=uuid.uuid4
+    )
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        FlexibleUUID(), ForeignKey("tasks.id"), nullable=False
+    )
+    type: Mapped[str] = mapped_column(String(20), nullable=False, default="comment")
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    meta_data: Mapped[dict] = mapped_column(
+        FlexibleJSON(), default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    task: Mapped["Task"] = relationship("Task")
+
+
+class NotificationDelivery(Base):
+    __tablename__ = "notification_deliveries"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        FlexibleUUID(), primary_key=True, default=uuid.uuid4
+    )
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        FlexibleUUID(), ForeignKey("tasks.id"), nullable=False
+    )
+    reason: Mapped[str] = mapped_column(String(50), nullable=False)
+    channel: Mapped[str] = mapped_column(String(30), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_data: Mapped[dict] = mapped_column(
+        FlexibleJSON(), default=dict, nullable=False
+    )
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    task: Mapped["Task"] = relationship("Task")
