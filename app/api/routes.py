@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
@@ -6,7 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     get_alert_delivery_service,
+    get_blocked_recovery_service,
+    get_execution_suggestion_service,
     get_reminder_service,
+    get_review_summary_service,
     get_task_intake_service,
     get_task_parsing_service,
     get_task_planning_service,
@@ -18,7 +22,9 @@ from app.config import Settings, get_settings
 from app.database import get_async_session
 from app.schemas import (
     AlertListResponse,
+    ApplyPlanRequest,
     ApplySuggestionRequest,
+    BlockedRecoveryResponse,
     DispatchAlertsRequest,
     DispatchAlertsResponse,
     DecomposeRequest,
@@ -26,12 +32,16 @@ from app.schemas import (
     DecomposeSuggestionResponse,
     DeleteResponse,
     HealthResponse,
+    NotificationTestRequest,
+    NotificationTestResponse,
     ParseAndCreateTaskRequest,
     ParseAndCreateTaskResponse,
     ParseTaskRequest,
     ParseTaskResponse,
     ReadyTaskListResponse,
+    ReviewSummaryResponse,
     ReminderScanResponse,
+    SuggestedTaskListResponse,
     TaskCommentCreate,
     TaskCommentListResponse,
     TaskCommentResponse,
@@ -40,14 +50,18 @@ from app.schemas import (
     TaskDependencyResponse,
     TaskCreate,
     TaskListResponse,
+    TaskPlanResponse,
     TaskResponse,
     TaskUpdate,
     WorkspaceDashboardResponse,
 )
+from app.services.blocked_recovery_service import BlockedRecoveryService
+from app.services.execution_suggestion_service import ExecutionSuggestionService
 from app.services.notification_service import AlertDeliveryService
 from app.services.task_intake_service import TaskIntakeService
 from app.services.task_parsing_service import TaskParsingService
 from app.services.reminder_service import ReminderService
+from app.services.review_summary_service import ReviewSummaryService
 from app.services.task_planning_service import TaskPlanningService
 from app.services.task_service import TaskService
 from app.services.workspace_service import WorkspaceService
@@ -134,6 +148,23 @@ async def apply_task_suggestions(
     svc: TaskPlanningService = Depends(get_task_planning_service),
 ):
     return await svc.apply_suggestions(task_id, data.indices)
+
+
+@router.post("/tasks/{task_id}/plan", response_model=TaskPlanResponse)
+async def generate_task_plan(
+    task_id: uuid.UUID,
+    svc: TaskPlanningService = Depends(get_task_planning_service),
+):
+    return await svc.generate_plan(task_id)
+
+
+@router.post("/tasks/{task_id}/apply-plan", response_model=DecomposeResponse)
+async def apply_task_plan(
+    task_id: uuid.UUID,
+    data: ApplyPlanRequest,
+    svc: TaskPlanningService = Depends(get_task_planning_service),
+):
+    return await svc.apply_plan(task_id, data.indices)
 
 
 @router.post("/tasks/{task_id}/dependencies", response_model=TaskDependencyResponse, status_code=201)
@@ -260,6 +291,24 @@ async def get_workspace_dashboard(
     return await svc.get_dashboard(top_n=top_n)
 
 
+@router.get("/workspace/suggested-today", response_model=SuggestedTaskListResponse)
+async def get_suggested_today(
+    top_n: int = Query(10, ge=1, le=100),
+    tags: list[str] | None = Query(None),
+    svc: ExecutionSuggestionService = Depends(get_execution_suggestion_service),
+):
+    return await svc.get_suggested_today(top_n=top_n, tags=tags)
+
+
+@router.get("/workspace/stale", response_model=TaskListResponse)
+async def get_stale_tasks(
+    top_n: int = Query(20, ge=1, le=100),
+    svc: ExecutionSuggestionService = Depends(get_execution_suggestion_service),
+):
+    result = await svc.get_stale_tasks(top_n=top_n)
+    return TaskListResponse(tasks=result.tasks, total=result.total, offset=0)
+
+
 @router.post("/reminders/scan", response_model=ReminderScanResponse)
 async def scan_reminders(
     top_n: int = Query(20, ge=1, le=100),
@@ -273,7 +322,33 @@ async def dispatch_alerts(
     data: DispatchAlertsRequest,
     svc: AlertDeliveryService = Depends(get_alert_delivery_service),
 ):
-    return await svc.dispatch_alerts(top_n=data.top_n, force=data.force)
+    return await svc.dispatch_alerts(top_n=data.top_n, force=data.force, channel=data.channel)
+
+
+@router.post("/notifications/test", response_model=NotificationTestResponse)
+async def test_notification_channel(
+    data: NotificationTestRequest,
+    svc: AlertDeliveryService = Depends(get_alert_delivery_service),
+):
+    return await svc.test_channel(message=data.message, channel=data.channel)
+
+
+@router.get("/tasks/{task_id}/recovery-suggestions", response_model=BlockedRecoveryResponse)
+async def get_task_recovery_suggestions(
+    task_id: uuid.UUID,
+    svc: BlockedRecoveryService = Depends(get_blocked_recovery_service),
+):
+    return await svc.get_recovery_suggestions(task_id)
+
+
+@router.get("/reviews/summary", response_model=ReviewSummaryResponse)
+async def get_review_summary(
+    from_date: datetime = Query(...),
+    to_date: datetime = Query(...),
+    tags: list[str] | None = Query(None),
+    svc: ReviewSummaryService = Depends(get_review_summary_service),
+):
+    return await svc.summarize(from_date=from_date, to_date=to_date, tags=tags)
 
 
 health_router = APIRouter()

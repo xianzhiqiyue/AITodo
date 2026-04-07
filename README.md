@@ -13,7 +13,9 @@
 - 评论 / 时间线、工作台告警与提醒扫描
 - 工作台总览 dashboard 接口
 - 主动告警分发与 webhook 通知记录
+- 今日建议任务、阻塞恢复建议、周期回顾总结
 - AI 拆解建议与确认创建
+- AI 拆解建议支持推荐顺序和自动依赖落库
 - API Key 鉴权与基础限流
 - Request ID、慢请求日志、增强健康检查
 - PostgreSQL + pgvector 语义检索
@@ -22,6 +24,7 @@
 - MCP tools: `add_task_comment`、`get_task_timeline`、`get_workspace_today`、`get_workspace_overdue`、`get_workspace_blocked`、`get_workspace_recently_updated`、`get_workspace_alerts`
 - MCP tools: `get_workspace_dashboard`、`dispatch_alert_notifications`
 - MCP tools: `suggest_task_decomposition`、`apply_task_suggestions`、`scan_reminders`
+- MCP tools: `plan_task_execution`、`apply_task_plan`、`get_suggested_today_tasks`、`get_stale_tasks`、`get_task_recovery_suggestions`、`get_review_summary`、`test_notification_channel`
 
 ## 本地启动
 
@@ -68,6 +71,7 @@ uvicorn main:app --reload
 
 ```bash
 export NOTIFICATION_WEBHOOK_URL=https://example.com/webhook
+export NOTIFICATION_DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=xxx
 export NOTIFICATION_REPEAT_WINDOW_HOURS=6
 ```
 
@@ -185,7 +189,57 @@ curl -X GET "http://127.0.0.1:8000/api/v1/workspace/dashboard?top_n=10" \
   -H "Authorization: Bearer $API_KEY"
 ```
 
-会一次性返回 `today / overdue / blocked / ready_to_start / recently_updated / alerts`。
+会一次性返回 `today / overdue / blocked / ready_to_start / recently_updated / alerts / suggested_today / stale_tasks`。
+
+## AI 拆解建议
+
+```bash
+curl -X GET "http://127.0.0.1:8000/api/v1/tasks/<TASK_ID>/decompose/suggestions" \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+返回的建议项会包含：
+- `order`
+- `depends_on_indices`
+
+调用 `apply-suggestions` 时，如果选中的建议之间存在推荐依赖，系统会在创建子任务后自动补齐任务依赖关系。
+
+也支持先生成完整计划，再确认落库：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/tasks/<TASK_ID>/plan" \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/tasks/<TASK_ID>/apply-plan" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"indices":[0,1,2]}'
+```
+
+## 今日建议与阻塞恢复
+
+建议优先处理任务：
+
+```bash
+curl -X GET "http://127.0.0.1:8000/api/v1/workspace/suggested-today?top_n=10" \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+阻塞恢复建议：
+
+```bash
+curl -X GET "http://127.0.0.1:8000/api/v1/tasks/<TASK_ID>/recovery-suggestions" \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+周期回顾总结：
+
+```bash
+curl -X GET "http://127.0.0.1:8000/api/v1/reviews/summary?from_date=2026-04-01T00:00:00Z&to_date=2026-04-07T23:59:59Z" \
+  -H "Authorization: Bearer $API_KEY"
+```
 
 ## 主动通知
 
@@ -199,6 +253,15 @@ curl -X POST "http://127.0.0.1:8000/api/v1/notifications/dispatch-alerts" \
 ```
 
 如果未配置 `NOTIFICATION_WEBHOOK_URL`，接口会返回校验错误。
+
+也支持测试指定通知渠道：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/notifications/test" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"dingtalk","message":"AITodo test"}'
+```
 
 ## 健康检查与观测
 

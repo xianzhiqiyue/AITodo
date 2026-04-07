@@ -28,6 +28,7 @@ def build_test_settings(parsing_timezone: str = "UTC") -> Settings:
         parsing_model="gpt-4o-mini",
         parsing_timezone=parsing_timezone,
         notification_webhook_url="",
+        notification_dingtalk_webhook_url="",
         notification_repeat_window_hours=6,
         slow_request_threshold_ms=1,
         log_level="WARNING",

@@ -4,9 +4,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.database import get_async_session
 from app.errors import AppError, ErrorCode
+from app.services.blocked_recovery_service import BlockedRecoveryService
 from app.services.embedding_service import EmbeddingService
-from app.services.notification_service import AlertDeliveryService, WebhookNotificationProvider
+from app.services.execution_suggestion_service import ExecutionSuggestionService
+from app.services.notification_service import (
+    AlertDeliveryService,
+    DingTalkNotificationProvider,
+    WebhookNotificationProvider,
+)
 from app.services.reminder_service import ReminderService
+from app.services.review_summary_service import ReviewSummaryService
 from app.services.task_intake_service import TaskIntakeService
 from app.services.task_parsing_service import TaskParsingService
 from app.services.task_planning_service import TaskPlanningService
@@ -120,13 +127,55 @@ async def get_alert_delivery_service(
         is_postgres="postgresql" in settings.database_url,
         timezone_name=settings.parsing_timezone,
     )
-    provider = (
-        WebhookNotificationProvider(settings.notification_webhook_url)
-        if settings.notification_webhook_url
-        else None
-    )
+    providers = {}
+    if settings.notification_webhook_url:
+        providers["webhook"] = WebhookNotificationProvider(settings.notification_webhook_url)
+    if settings.notification_dingtalk_webhook_url:
+        providers["dingtalk"] = DingTalkNotificationProvider(settings.notification_dingtalk_webhook_url)
     return AlertDeliveryService(
         task_service=task_service,
-        provider=provider,
+        providers=providers,
         repeat_window_hours=settings.notification_repeat_window_hours,
     )
+
+
+async def get_execution_suggestion_service(
+    session: AsyncSession = Depends(get_async_session),
+    settings: Settings = Depends(get_settings),
+) -> ExecutionSuggestionService:
+    embedding_svc = EmbeddingService(settings) if settings.embedding_api_key else None
+    task_service = TaskService(
+        session=session,
+        embedding_service=embedding_svc,
+        is_postgres="postgresql" in settings.database_url,
+        timezone_name=settings.parsing_timezone,
+    )
+    return ExecutionSuggestionService(task_service=task_service)
+
+
+async def get_blocked_recovery_service(
+    session: AsyncSession = Depends(get_async_session),
+    settings: Settings = Depends(get_settings),
+) -> BlockedRecoveryService:
+    embedding_svc = EmbeddingService(settings) if settings.embedding_api_key else None
+    task_service = TaskService(
+        session=session,
+        embedding_service=embedding_svc,
+        is_postgres="postgresql" in settings.database_url,
+        timezone_name=settings.parsing_timezone,
+    )
+    return BlockedRecoveryService(task_service=task_service)
+
+
+async def get_review_summary_service(
+    session: AsyncSession = Depends(get_async_session),
+    settings: Settings = Depends(get_settings),
+) -> ReviewSummaryService:
+    embedding_svc = EmbeddingService(settings) if settings.embedding_api_key else None
+    task_service = TaskService(
+        session=session,
+        embedding_service=embedding_svc,
+        is_postgres="postgresql" in settings.database_url,
+        timezone_name=settings.parsing_timezone,
+    )
+    return ReviewSummaryService(task_service=task_service)

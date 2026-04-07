@@ -6,16 +6,23 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from mcp.server.fastmcp import FastMCP
 
 from app.config import get_settings
 from app.database import async_session_factory
 from app.errors import AppError
+from app.services.blocked_recovery_service import BlockedRecoveryService
 from app.services.embedding_service import EmbeddingService
-from app.services.notification_service import AlertDeliveryService, WebhookNotificationProvider
+from app.services.execution_suggestion_service import ExecutionSuggestionService
+from app.services.notification_service import (
+    AlertDeliveryService,
+    DingTalkNotificationProvider,
+    WebhookNotificationProvider,
+)
 from app.services.reminder_service import ReminderService
+from app.services.review_summary_service import ReviewSummaryService
 from app.services.task_intake_service import TaskIntakeService
 from app.services.task_parsing_service import TaskParsingService
 from app.services.task_planning_service import TaskPlanningService
@@ -86,16 +93,46 @@ async def _get_alert_delivery_service() -> AlertDeliveryService:
         embedding_service=_embedding_svc,
         timezone_name=settings.parsing_timezone,
     )
-    provider = (
-        WebhookNotificationProvider(settings.notification_webhook_url)
-        if settings.notification_webhook_url
-        else None
-    )
+    providers = {}
+    if settings.notification_webhook_url:
+        providers["webhook"] = WebhookNotificationProvider(settings.notification_webhook_url)
+    if settings.notification_dingtalk_webhook_url:
+        providers["dingtalk"] = DingTalkNotificationProvider(settings.notification_dingtalk_webhook_url)
     return AlertDeliveryService(
         task_service=task_service,
-        provider=provider,
+        providers=providers,
         repeat_window_hours=settings.notification_repeat_window_hours,
     )
+
+
+async def _get_execution_suggestion_service() -> ExecutionSuggestionService:
+    session = async_session_factory()
+    task_service = TaskService(
+        session=session,
+        embedding_service=_embedding_svc,
+        timezone_name=settings.parsing_timezone,
+    )
+    return ExecutionSuggestionService(task_service=task_service)
+
+
+async def _get_blocked_recovery_service() -> BlockedRecoveryService:
+    session = async_session_factory()
+    task_service = TaskService(
+        session=session,
+        embedding_service=_embedding_svc,
+        timezone_name=settings.parsing_timezone,
+    )
+    return BlockedRecoveryService(task_service=task_service)
+
+
+async def _get_review_summary_service() -> ReviewSummaryService:
+    session = async_session_factory()
+    task_service = TaskService(
+        session=session,
+        embedding_service=_embedding_svc,
+        timezone_name=settings.parsing_timezone,
+    )
+    return ReviewSummaryService(task_service=task_service)
 
 
 def _serialize(obj) -> str:
@@ -415,6 +452,32 @@ async def apply_task_suggestions(task_id: str, indices: list[int]) -> str:
 
 
 @mcp.tool()
+async def plan_task_execution(task_id: str) -> str:
+    """为一个任务生成结构化执行计划。"""
+    svc = await _get_planning_service()
+    try:
+        result = await svc.generate_plan(uuid.UUID(task_id))
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
+
+
+@mcp.tool()
+async def apply_task_plan(task_id: str, indices: list[int] | None = None) -> str:
+    """将任务计划中的建议批量应用为子任务和依赖。"""
+    svc = await _get_planning_service()
+    try:
+        result = await svc.apply_plan(uuid.UUID(task_id), indices)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
+
+
+@mcp.tool()
 async def scan_reminders(top_n: int = 20) -> str:
     """执行一次提醒扫描，返回当前告警快照。"""
     svc = await _get_reminder_service()
@@ -433,6 +496,76 @@ async def dispatch_alert_notifications(top_n: int = 20, force: bool = False) -> 
     svc = await _get_alert_delivery_service()
     try:
         result = await svc.dispatch_alerts(top_n=top_n, force=force)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
+
+
+@mcp.tool()
+async def test_notification_channel(channel: str | None = None, message: str = "AITodo notification channel test") -> str:
+    """测试当前配置的通知渠道是否可用。"""
+    svc = await _get_alert_delivery_service()
+    try:
+        result = await svc.test_channel(message=message, channel=channel)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
+
+
+@mcp.tool()
+async def get_suggested_today_tasks(top_n: int = 10, tags: list[str] | None = None) -> str:
+    """获取今天建议优先处理的任务列表。"""
+    svc = await _get_execution_suggestion_service()
+    try:
+        result = await svc.get_suggested_today(top_n=top_n, tags=tags)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
+
+
+@mcp.tool()
+async def get_stale_tasks(top_n: int = 20) -> str:
+    """获取长时间未推进的开放任务。"""
+    svc = await _get_execution_suggestion_service()
+    try:
+        result = await svc.get_stale_tasks(top_n=top_n)
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
+
+
+@mcp.tool()
+async def get_task_recovery_suggestions(task_id: str) -> str:
+    """获取 blocked 任务的恢复建议。"""
+    svc = await _get_blocked_recovery_service()
+    try:
+        result = await svc.get_recovery_suggestions(uuid.UUID(task_id))
+        return _serialize(result.model_dump())
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.task_service.session.close()
+
+
+@mcp.tool()
+async def get_review_summary(
+    days: int = 7,
+    tags: list[str] | None = None,
+) -> str:
+    """获取最近一段时间的任务回顾摘要。"""
+    svc = await _get_review_summary_service()
+    try:
+        to_date = datetime.now(timezone.utc)
+        from_date = to_date - timedelta(days=days)
+        result = await svc.summarize(from_date=from_date, to_date=to_date, tags=tags)
         return _serialize(result.model_dump())
     except AppError as exc:
         return _serialize({"error": {"code": exc.code.value, "message": exc.message}})

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     parsing_model: str = "gpt-4o-mini"
     parsing_timezone: str = "UTC"
     notification_webhook_url: str = ""
+    notification_dingtalk_webhook_url: str = ""
     notification_repeat_window_hours: int = 6
     slow_request_threshold_ms: int = 500
     log_level: str = "INFO"

@@ -312,12 +312,25 @@ async def test_workspace_dashboard_via_api(client: AsyncClient):
     assert "blocked" in data
     assert "ready_to_start" in data
     assert "alerts" in data
+    assert "suggested_today" in data
+    assert "stale_tasks" in data
+
+
+async def test_suggested_today_and_stale_via_api(client: AsyncClient):
+    overdue_due = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    await client.post("/api/v1/tasks", json={"title": "Urgent", "priority": 1, "due_at": overdue_due})
+
+    suggested_resp = await client.get("/api/v1/workspace/suggested-today")
+    stale_resp = await client.get("/api/v1/workspace/stale")
+
+    assert suggested_resp.status_code == 200
+    assert stale_resp.status_code == 200
+    assert suggested_resp.json()["total"] >= 1
 
 
 class FakeNotificationProvider:
-    channel = "webhook"
-
-    def __init__(self):
+    def __init__(self, channel: str = "webhook"):
+        self.channel = channel
         self.messages: list[tuple[str, dict]] = []
 
     async def send(self, message: str, payload: dict) -> None:
@@ -351,9 +364,39 @@ async def test_decompose_suggestions_and_apply_via_api(client: AsyncClient):
     assert suggest_resp.status_code == 200
     suggestions = suggest_resp.json()["suggestions"]
     assert len(suggestions) >= 3
+    assert suggestions[1]["depends_on_indices"] == [0]
+    assert suggestions[2]["depends_on_indices"] == [1]
 
     apply_resp = await client.post(
         f"/api/v1/tasks/{task_id}/decompose/apply-suggestions",
+        json={"indices": [0, 1]},
+    )
+    assert apply_resp.status_code == 200
+    sub_tasks = apply_resp.json()["sub_tasks"]
+    assert len(sub_tasks) == 2
+
+    dependencies_resp = await client.get(
+        f"/api/v1/tasks/{sub_tasks[1]['id']}/dependencies"
+    )
+    assert dependencies_resp.status_code == 200
+    dependency_ids = {
+        item["depends_on_task_id"] for item in dependencies_resp.json()["dependencies"]
+    }
+    assert sub_tasks[0]["id"] in dependency_ids
+
+
+async def test_generate_and_apply_plan_via_api(client: AsyncClient):
+    task_resp = await client.post("/api/v1/tasks", json={"title": "写项目报告"})
+    task_id = task_resp.json()["id"]
+
+    plan_resp = await client.post(f"/api/v1/tasks/{task_id}/plan")
+    assert plan_resp.status_code == 200
+    plan = plan_resp.json()
+    assert plan["goal"] == "写项目报告"
+    assert len(plan["suggestions"]) >= 3
+
+    apply_resp = await client.post(
+        f"/api/v1/tasks/{task_id}/apply-plan",
         json={"indices": [0, 1]},
     )
     assert apply_resp.status_code == 200
@@ -403,7 +446,7 @@ async def test_dispatch_alerts_via_api(client: AsyncClient, db_session):
         )
         return AlertDeliveryService(
             task_service=task_service,
-            provider=fake_provider,
+            providers={"webhook": fake_provider},
             repeat_window_hours=6,
         )
 
@@ -417,6 +460,57 @@ async def test_dispatch_alerts_via_api(client: AsyncClient, db_session):
     data = resp.json()
     assert data["sent_count"] >= 1
     assert len(fake_provider.messages) == data["sent_count"]
+
+
+async def test_notification_test_via_api(client: AsyncClient, db_session):
+    fake_provider = FakeNotificationProvider(channel="dingtalk")
+
+    async def _override_alert_delivery_service():
+        task_service = TaskService(
+            session=db_session,
+            embedding_service=None,
+            is_postgres=False,
+            timezone_name="UTC",
+        )
+        return AlertDeliveryService(
+            task_service=task_service,
+            providers={"dingtalk": fake_provider},
+            repeat_window_hours=6,
+        )
+
+    app.dependency_overrides[get_alert_delivery_service] = _override_alert_delivery_service
+    try:
+        resp = await client.post(
+            "/api/v1/notifications/test",
+            json={"channel": "dingtalk", "message": "hello"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_alert_delivery_service, None)
+
+    assert resp.status_code == 200
+    assert resp.json()["channel"] == "dingtalk"
+    assert fake_provider.messages[0][0] == "hello"
+
+
+async def test_recovery_suggestions_and_review_summary_via_api(client: AsyncClient):
+    blocked_resp = await client.post("/api/v1/tasks", json={"title": "Blocked", "status": "blocked"})
+    task_id = blocked_resp.json()["id"]
+
+    recovery_resp = await client.get(f"/api/v1/tasks/{task_id}/recovery-suggestions")
+    assert recovery_resp.status_code == 200
+    assert recovery_resp.json()["summary"]
+
+    to_date = datetime.now(timezone.utc)
+    from_date = to_date - timedelta(days=1)
+    review_resp = await client.get(
+        "/api/v1/reviews/summary",
+        params={
+            "from_date": from_date.isoformat(),
+            "to_date": to_date.isoformat(),
+        },
+    )
+    assert review_resp.status_code == 200
+    assert "created_count" in review_resp.json()
 
 
 async def test_unauthorized(client: AsyncClient):

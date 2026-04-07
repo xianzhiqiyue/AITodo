@@ -60,6 +60,8 @@ class DecomposeSuggestion(BaseModel):
     description: str | None = None
     priority: int = Field(default=3, ge=1, le=5)
     rationale: str
+    order: int = Field(default=1, ge=1)
+    depends_on_indices: list[int] = Field(default_factory=list)
 
 
 class DecomposeSuggestionResponse(BaseModel):
@@ -69,6 +71,18 @@ class DecomposeSuggestionResponse(BaseModel):
 
 class ApplySuggestionRequest(BaseModel):
     indices: list[int] = Field(..., min_length=1)
+
+
+class TaskPlanResponse(BaseModel):
+    task_id: uuid.UUID
+    goal: str
+    suggestions: list[DecomposeSuggestion]
+    risks: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+
+
+class ApplyPlanRequest(BaseModel):
+    indices: list[int] | None = None
 
 
 class TaskDependencyCreate(BaseModel):
@@ -209,11 +223,65 @@ class WorkspaceDashboardResponse(BaseModel):
     ready_to_start: ReadyTaskListResponse
     recently_updated: TaskListResponse
     alerts: AlertListResponse
+    suggested_today: "SuggestedTaskListResponse | None" = None
+    stale_tasks: "TaskListResponse | None" = None
+
+
+class SuggestedTask(BaseModel):
+    task: TaskResponse
+    score: float
+    reasons: list[str]
+
+
+class SuggestedTaskListResponse(BaseModel):
+    tasks: list[SuggestedTask]
+    total: int
+
+
+class BlockedRecoveryItem(BaseModel):
+    task: TaskResponse
+    summary: str
+    suggestions: list[str]
+    blockers: list[str] = Field(default_factory=list)
+
+
+class BlockedRecoveryResponse(BaseModel):
+    task_id: uuid.UUID
+    summary: str
+    suggestions: list[str]
+    blockers: list[str] = Field(default_factory=list)
+
+
+class StaleTaskListResponse(BaseModel):
+    tasks: list[TaskResponse]
+    total: int
+
+
+class ReviewSummaryResponse(BaseModel):
+    from_date: datetime
+    to_date: datetime
+    created_count: int
+    completed_count: int
+    overdue_count: int
+    blocked_count: int
+    recent_progress: list[str]
 
 
 class DispatchAlertsRequest(BaseModel):
     top_n: int = Field(default=20, ge=1, le=100)
     force: bool = False
+    channel: str | None = None
+
+
+class NotificationTestRequest(BaseModel):
+    channel: str | None = None
+    message: str = Field(default="AITodo notification channel test", min_length=1, max_length=500)
+
+
+class NotificationTestResponse(BaseModel):
+    channel: str
+    success: bool
+    detail: str
 
 
 class NotificationDeliveryResponse(BaseModel):
