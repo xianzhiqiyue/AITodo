@@ -241,3 +241,81 @@ class NotificationDelivery(Base):
     )
 
     task: Mapped["Task"] = relationship("Task")
+
+class ObsidianSyncConnection(Base):
+    __tablename__ = "obsidian_sync_connections"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        FlexibleUUID(), primary_key=True, default=uuid.uuid4
+    )
+    base_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    vault_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    device_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    device_name: Mapped[str] = mapped_column(String(120), nullable=False, default="AI-TODO-SERVER")
+    refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_checkpoint: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_data: Mapped[dict] = mapped_column(FlexibleJSON(), default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ObsidianFileBinding(Base):
+    __tablename__ = "obsidian_file_bindings"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        FlexibleUUID(), primary_key=True, default=uuid.uuid4
+    )
+    entity_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    vault_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    path: Mapped[str] = mapped_column(String(4096), nullable=False)
+    file_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    last_exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    meta_data: Mapped[dict] = mapped_column(FlexibleJSON(), default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+class ObsidianTaskIndex(Base):
+    __tablename__ = "obsidian_task_index"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        FlexibleUUID(), primary_key=True, default=uuid.uuid4
+    )
+    task_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    vault_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    path: Mapped[str] = mapped_column(String(4096), nullable=False)
+    file_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="todo")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tags: Mapped[list[str]] = mapped_column(StringList(), default=list, nullable=False)
+    parent_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    depends_on: Mapped[list[str]] = mapped_column(StringList(), default=list, nullable=False)
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    parsed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    meta_data: Mapped[dict] = mapped_column(FlexibleJSON(), default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )

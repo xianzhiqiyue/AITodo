@@ -112,6 +112,98 @@ pytest -q
 pip install -r requirements.txt
 ```
 
+## Obsidian Sync 导出
+
+AITodo 可将任务导出为 Obsidian Vault 中的 Markdown 文件，并通过相邻 `obsidianSync` 服务同步到本地 Obsidian。
+
+生产已启用 Obsidian-native 模式，当前目标 Vault 为 `main-vault`（`08d02552-8321-40c0-923a-22768c33d854`）。上线总结见 `docs/summary/2026-04-16-obsidian-native-production-rollout-summary.md`，生产运维和回滚方式见 `docs/运维与排障.md`。
+
+配置环境变量：
+
+```bash
+export OBSIDIAN_SYNC_BASE_URL=http://localhost:3000/api/v1
+export OBSIDIAN_SYNC_VAULT_ID=<VAULT_ID>
+# 二选一：直接提供 access token，或提供 email/password 由服务登录
+export OBSIDIAN_SYNC_ACCESS_TOKEN=<ACCESS_TOKEN>
+export OBSIDIAN_SYNC_EMAIL=admin@example.com
+export OBSIDIAN_SYNC_PASSWORD=admin123456
+```
+
+导出单个任务：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/obsidian-sync/tasks/<TASK_ID>/export" \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+批量导出：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/obsidian-sync/export-all" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"limit":100}'
+```
+
+导出文件默认位于 Vault 的 `AI-Todo/<记录类型>/<日期时间>.md`。
+
+从 Obsidian Markdown 重建索引：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/obsidian-sync/index/rebuild" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prefix":"AI-Todo/<记录类型>/","limit":500}'
+```
+
+启用 Obsidian-native 模式：
+
+```bash
+export AITODO_STORAGE_MODE=obsidian_native
+```
+
+在 `obsidian_native` 模式下，`GET /api/v1/tasks`、`GET /api/v1/tasks/{task_id}`、`GET /api/v1/workspace/ready-to-start`、`GET /api/v1/workspace/suggested-today` 会读取 `obsidian_task_index`；`POST /api/v1/tasks` 与 `PUT/PATCH /api/v1/tasks/{task_id}` 会写入 Obsidian Markdown 并更新索引。`DELETE /api/v1/tasks/{task_id}` 会安全归档为 `status: archived`，不会远端硬删除文件。依赖接口也会维护 Markdown 的 `depends_on` 字段：`POST/GET/DELETE /api/v1/tasks/{task_id}/dependencies`。评论接口会维护 Markdown 时间线区块：`POST /api/v1/tasks/{task_id}/comments`、`GET /api/v1/tasks/{task_id}/timeline`。`POST /api/v1/tasks/parse-and-create` 也会写入 Obsidian Markdown。plan/apply-plan 会基于 Obsidian 索引生成计划，并将计划项创建为 Obsidian Markdown 子任务。
+
+
+
+一键本地 E2E 联调（自动拉起 obsidianSync 依赖、迁移、启动两侧 API 并运行 smoke）：
+
+```bash
+scripts/e2e-obsidian-native-local.py
+```
+
+常用覆盖项：
+
+```bash
+E2E_OBSIDIAN_API_PORT=13000 E2E_AITODO_PORT=18000 scripts/e2e-obsidian-native-local.py
+E2E_KEEP_INFRA=1 scripts/e2e-obsidian-native-local.py  # 保留 docker 依赖服务
+```
+
+Obsidian-native smoke 联调脚本：
+
+```bash
+export AITODO_BASE_URL=http://127.0.0.1:8000
+export API_KEY=sk_ants_12345
+# AITodo 服务本身需以 AITODO_STORAGE_MODE=obsidian_native 启动
+scripts/smoke-obsidian-native.py
+```
+
+如需同时校验 obsidianSync 文件 API 中已存在对应 Markdown：
+
+```bash
+export OBSIDIAN_SYNC_BASE_URL=http://127.0.0.1:3000/api/v1
+export OBSIDIAN_SYNC_ACCESS_TOKEN=<access-token>
+export OBSIDIAN_SYNC_VAULT_ID=<vault-id>
+scripts/smoke-obsidian-native.py
+```
+
+查询已重建的 Obsidian 任务索引：
+
+```bash
+curl -X GET "http://127.0.0.1:8000/api/v1/obsidian-sync/index/tasks?limit=100" \
+  -H "Authorization: Bearer $API_KEY"
+```
+
 ## MCP Server
 
 通过 stdio 运行：

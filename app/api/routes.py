@@ -11,6 +11,12 @@ from app.api.deps import (
     get_execution_suggestion_service,
     get_reminder_service,
     get_review_summary_service,
+    get_obsidian_export_service,
+    get_obsidian_index_service,
+    get_obsidian_native_intake_service,
+    get_obsidian_native_planning_service,
+    get_obsidian_native_query_service,
+    get_obsidian_native_write_service,
     get_task_intake_service,
     get_task_parsing_service,
     get_task_planning_service,
@@ -34,6 +40,13 @@ from app.schemas import (
     HealthResponse,
     NotificationTestRequest,
     NotificationTestResponse,
+    ObsidianBindingListResponse,
+    ObsidianExportAllRequest,
+    ObsidianExportAllResponse,
+    ObsidianExportTaskResponse,
+    ObsidianIndexRebuildRequest,
+    ObsidianIndexRebuildResponse,
+    ObsidianTaskIndexListResponse,
     ParseAndCreateTaskRequest,
     ParseAndCreateTaskResponse,
     ParseTaskRequest,
@@ -58,6 +71,12 @@ from app.schemas import (
 from app.services.blocked_recovery_service import BlockedRecoveryService
 from app.services.execution_suggestion_service import ExecutionSuggestionService
 from app.services.notification_service import AlertDeliveryService
+from app.services.obsidian_index_service import ObsidianIndexService
+from app.services.obsidian_native_intake_service import ObsidianNativeTaskIntakeService
+from app.services.obsidian_native_planning_service import ObsidianNativeTaskPlanningService
+from app.services.obsidian_native_query_service import ObsidianNativeTaskQueryService
+from app.services.obsidian_native_write_service import ObsidianNativeTaskWriteService
+from app.services.obsidian_sync_service import ObsidianExportService
 from app.services.task_intake_service import TaskIntakeService
 from app.services.task_parsing_service import TaskParsingService
 from app.services.reminder_service import ReminderService
@@ -73,7 +92,11 @@ router = APIRouter(prefix="/api/v1", dependencies=[Depends(verify_api_key)])
 async def create_task(
     data: TaskCreate,
     svc: TaskService = Depends(get_task_service),
+    native_write_svc: ObsidianNativeTaskWriteService = Depends(get_obsidian_native_write_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_write_svc.create_task(data)
     return await svc.upsert_task(data=data)
 
 
@@ -83,7 +106,11 @@ async def update_task(
     task_id: uuid.UUID,
     data: TaskUpdate,
     svc: TaskService = Depends(get_task_service),
+    native_write_svc: ObsidianNativeTaskWriteService = Depends(get_obsidian_native_write_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_write_svc.update_task(task_id, data)
     return await svc.upsert_task(update_data=data, task_id=task_id)
 
 
@@ -96,7 +123,18 @@ async def list_tasks(
     query: str | None = Query(None),
     parent_id: uuid.UUID | None = Query(None),
     svc: TaskService = Depends(get_task_service),
+    native_svc: ObsidianNativeTaskQueryService = Depends(get_obsidian_native_query_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.get_task_context(
+            status_filter=status_filter,
+            top_n=top_n,
+            offset=offset,
+            tags=tags,
+            query=query,
+            parent_id=parent_id,
+        )
     return await svc.get_task_context(
         status_filter=status_filter,
         top_n=top_n,
@@ -111,7 +149,11 @@ async def list_tasks(
 async def get_task(
     task_id: uuid.UUID,
     svc: TaskService = Depends(get_task_service),
+    native_svc: ObsidianNativeTaskQueryService = Depends(get_obsidian_native_query_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.get_task(task_id)
     return await svc.get_task(task_id)
 
 
@@ -120,7 +162,11 @@ async def delete_task(
     task_id: uuid.UUID,
     cascade: bool = Query(False),
     svc: TaskService = Depends(get_task_service),
+    native_write_svc: ObsidianNativeTaskWriteService = Depends(get_obsidian_native_write_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return DeleteResponse(deleted_count=await native_write_svc.archive_task(task_id))
     return await svc.delete_task(task_id, cascade=cascade)
 
 
@@ -137,7 +183,11 @@ async def decompose_task(
 async def suggest_task_decomposition(
     task_id: uuid.UUID,
     svc: TaskPlanningService = Depends(get_task_planning_service),
+    native_svc: ObsidianNativeTaskPlanningService = Depends(get_obsidian_native_planning_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.suggest_decomposition(task_id)
     return await svc.suggest_decomposition(task_id)
 
 
@@ -146,7 +196,11 @@ async def apply_task_suggestions(
     task_id: uuid.UUID,
     data: ApplySuggestionRequest,
     svc: TaskPlanningService = Depends(get_task_planning_service),
+    native_svc: ObsidianNativeTaskPlanningService = Depends(get_obsidian_native_planning_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.apply_plan(task_id, data.indices)
     return await svc.apply_suggestions(task_id, data.indices)
 
 
@@ -154,7 +208,11 @@ async def apply_task_suggestions(
 async def generate_task_plan(
     task_id: uuid.UUID,
     svc: TaskPlanningService = Depends(get_task_planning_service),
+    native_svc: ObsidianNativeTaskPlanningService = Depends(get_obsidian_native_planning_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.generate_plan(task_id)
     return await svc.generate_plan(task_id)
 
 
@@ -163,7 +221,11 @@ async def apply_task_plan(
     task_id: uuid.UUID,
     data: ApplyPlanRequest,
     svc: TaskPlanningService = Depends(get_task_planning_service),
+    native_svc: ObsidianNativeTaskPlanningService = Depends(get_obsidian_native_planning_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.apply_plan(task_id, data.indices)
     return await svc.apply_plan(task_id, data.indices)
 
 
@@ -172,7 +234,11 @@ async def add_task_dependency(
     task_id: uuid.UUID,
     data: TaskDependencyCreate,
     svc: TaskService = Depends(get_task_service),
+    native_write_svc: ObsidianNativeTaskWriteService = Depends(get_obsidian_native_write_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_write_svc.add_dependency(task_id, data.depends_on_task_id)
     return await svc.add_dependency(task_id, data.depends_on_task_id)
 
 
@@ -180,7 +246,11 @@ async def add_task_dependency(
 async def list_task_dependencies(
     task_id: uuid.UUID,
     svc: TaskService = Depends(get_task_service),
+    native_write_svc: ObsidianNativeTaskWriteService = Depends(get_obsidian_native_write_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_write_svc.list_dependencies(task_id)
     return await svc.list_dependencies(task_id)
 
 
@@ -189,7 +259,11 @@ async def delete_task_dependency(
     task_id: uuid.UUID,
     dependency_id: uuid.UUID,
     svc: TaskService = Depends(get_task_service),
+    native_write_svc: ObsidianNativeTaskWriteService = Depends(get_obsidian_native_write_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_write_svc.remove_dependency(task_id, dependency_id)
     return await svc.remove_dependency(task_id, dependency_id)
 
 
@@ -198,7 +272,11 @@ async def add_task_comment(
     task_id: uuid.UUID,
     data: TaskCommentCreate,
     svc: TaskService = Depends(get_task_service),
+    native_write_svc: ObsidianNativeTaskWriteService = Depends(get_obsidian_native_write_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_write_svc.add_comment(task_id, data)
     return await svc.add_comment(task_id, data)
 
 
@@ -206,7 +284,11 @@ async def add_task_comment(
 async def list_task_timeline(
     task_id: uuid.UUID,
     svc: TaskService = Depends(get_task_service),
+    native_write_svc: ObsidianNativeTaskWriteService = Depends(get_obsidian_native_write_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_write_svc.list_comments(task_id)
     return await svc.list_comments(task_id)
 
 
@@ -222,7 +304,18 @@ async def parse_task(
 async def parse_and_create_task(
     data: ParseAndCreateTaskRequest,
     svc: TaskIntakeService = Depends(get_task_intake_service),
+    native_svc: ObsidianNativeTaskIntakeService = Depends(get_obsidian_native_intake_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.parse_and_create(
+            text=data.text,
+            parent_id=data.parent_id,
+            min_confidence=data.min_confidence,
+            force_create=data.force_create,
+            selected_draft_index=data.selected_draft_index,
+            override=data.override,
+        )
     return await svc.parse_and_create(
         text=data.text,
         parent_id=data.parent_id,
@@ -239,7 +332,11 @@ async def list_ready_to_start_tasks(
     offset: int = Query(0, ge=0),
     tags: list[str] | None = Query(None),
     svc: TaskService = Depends(get_task_service),
+    native_svc: ObsidianNativeTaskQueryService = Depends(get_obsidian_native_query_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.list_ready_tasks(top_n=top_n, offset=offset, tags=tags)
     return await svc.list_ready_tasks(top_n=top_n, offset=offset, tags=tags)
 
 
@@ -247,7 +344,11 @@ async def list_ready_to_start_tasks(
 async def list_today_tasks(
     top_n: int = Query(20, ge=1, le=100),
     svc: TaskService = Depends(get_task_service),
+    native_svc: ObsidianNativeTaskQueryService = Depends(get_obsidian_native_query_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.list_today_tasks(top_n=top_n)
     return await svc.list_today_tasks(top_n=top_n)
 
 
@@ -255,7 +356,11 @@ async def list_today_tasks(
 async def list_overdue_tasks(
     top_n: int = Query(20, ge=1, le=100),
     svc: TaskService = Depends(get_task_service),
+    native_svc: ObsidianNativeTaskQueryService = Depends(get_obsidian_native_query_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.list_overdue_tasks(top_n=top_n)
     return await svc.list_overdue_tasks(top_n=top_n)
 
 
@@ -263,7 +368,11 @@ async def list_overdue_tasks(
 async def list_blocked_tasks(
     top_n: int = Query(20, ge=1, le=100),
     svc: TaskService = Depends(get_task_service),
+    native_svc: ObsidianNativeTaskQueryService = Depends(get_obsidian_native_query_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.list_blocked_tasks(top_n=top_n)
     return await svc.list_blocked_tasks(top_n=top_n)
 
 
@@ -271,7 +380,11 @@ async def list_blocked_tasks(
 async def list_recently_updated_tasks(
     top_n: int = Query(20, ge=1, le=100),
     svc: TaskService = Depends(get_task_service),
+    native_svc: ObsidianNativeTaskQueryService = Depends(get_obsidian_native_query_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.list_recently_updated_tasks(top_n=top_n)
     return await svc.list_recently_updated_tasks(top_n=top_n)
 
 
@@ -279,7 +392,11 @@ async def list_recently_updated_tasks(
 async def list_workspace_alerts(
     top_n: int = Query(20, ge=1, le=100),
     svc: TaskService = Depends(get_task_service),
+    native_svc: ObsidianNativeTaskQueryService = Depends(get_obsidian_native_query_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.list_alerts(top_n=top_n)
     return await svc.list_alerts(top_n=top_n)
 
 
@@ -287,7 +404,11 @@ async def list_workspace_alerts(
 async def get_workspace_dashboard(
     top_n: int = Query(10, ge=1, le=100),
     svc: WorkspaceService = Depends(get_workspace_service),
+    native_svc: ObsidianNativeTaskQueryService = Depends(get_obsidian_native_query_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.get_dashboard(top_n=top_n)
     return await svc.get_dashboard(top_n=top_n)
 
 
@@ -296,7 +417,11 @@ async def get_suggested_today(
     top_n: int = Query(10, ge=1, le=100),
     tags: list[str] | None = Query(None),
     svc: ExecutionSuggestionService = Depends(get_execution_suggestion_service),
+    native_svc: ObsidianNativeTaskQueryService = Depends(get_obsidian_native_query_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.get_suggested_today(top_n=top_n, tags=tags)
     return await svc.get_suggested_today(top_n=top_n, tags=tags)
 
 
@@ -304,7 +429,11 @@ async def get_suggested_today(
 async def get_stale_tasks(
     top_n: int = Query(20, ge=1, le=100),
     svc: ExecutionSuggestionService = Depends(get_execution_suggestion_service),
+    native_svc: ObsidianNativeTaskQueryService = Depends(get_obsidian_native_query_service),
+    settings: Settings = Depends(get_settings),
 ):
+    if settings.aitodo_storage_mode == "obsidian_native":
+        return await native_svc.get_stale_tasks(top_n=top_n)
     result = await svc.get_stale_tasks(top_n=top_n)
     return TaskListResponse(tasks=result.tasks, total=result.total, offset=0)
 
@@ -349,6 +478,49 @@ async def get_review_summary(
     svc: ReviewSummaryService = Depends(get_review_summary_service),
 ):
     return await svc.summarize(from_date=from_date, to_date=to_date, tags=tags)
+
+
+@router.post("/obsidian-sync/tasks/{task_id}/export", response_model=ObsidianExportTaskResponse)
+async def export_task_to_obsidian(
+    task_id: uuid.UUID,
+    svc: ObsidianExportService = Depends(get_obsidian_export_service),
+):
+    return await svc.export_task(task_id)
+
+
+@router.post("/obsidian-sync/export-all", response_model=ObsidianExportAllResponse)
+async def export_all_tasks_to_obsidian(
+    data: ObsidianExportAllRequest,
+    svc: ObsidianExportService = Depends(get_obsidian_export_service),
+):
+    return await svc.export_all_tasks(limit=data.limit)
+
+
+@router.get("/obsidian-sync/bindings", response_model=ObsidianBindingListResponse)
+async def list_obsidian_bindings(
+    entity_type: str | None = Query(None),
+    svc: ObsidianExportService = Depends(get_obsidian_export_service),
+):
+    items = await svc.list_bindings(entity_type=entity_type)
+    return ObsidianBindingListResponse(items=items, total=len(items))
+
+
+@router.post("/obsidian-sync/index/rebuild", response_model=ObsidianIndexRebuildResponse)
+async def rebuild_obsidian_index(
+    data: ObsidianIndexRebuildRequest,
+    svc: ObsidianIndexService = Depends(get_obsidian_index_service),
+):
+    return await svc.rebuild_index(prefix=data.prefix, limit=data.limit)
+
+
+@router.get("/obsidian-sync/index/tasks", response_model=ObsidianTaskIndexListResponse)
+async def list_obsidian_index_tasks(
+    status: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    svc: ObsidianIndexService = Depends(get_obsidian_index_service),
+):
+    items = await svc.list_indexed_tasks(status=status, limit=limit)
+    return ObsidianTaskIndexListResponse(items=items, total=len(items))
 
 
 health_router = APIRouter()

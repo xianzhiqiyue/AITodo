@@ -16,6 +16,8 @@ from app.errors import AppError
 from app.services.blocked_recovery_service import BlockedRecoveryService
 from app.services.embedding_service import EmbeddingService
 from app.services.execution_suggestion_service import ExecutionSuggestionService
+from app.services.obsidian_index_service import ObsidianIndexService
+from app.services.obsidian_sync_service import ObsidianExportService
 from app.services.notification_service import (
     AlertDeliveryService,
     DingTalkNotificationProvider,
@@ -260,6 +262,15 @@ async def decompose_task(task_id: str, sub_tasks: list[dict]) -> str:
 @mcp.tool()
 async def add_task_dependency(task_id: str, depends_on_task_id: str) -> str:
     """为任务添加依赖关系，表示 task_id 必须等待 depends_on_task_id 完成后才能执行。"""
+    if settings.aitodo_storage_mode == "obsidian_native":
+        svc = await _get_obsidian_native_write_service()
+        try:
+            result = await svc.add_dependency(uuid.UUID(task_id), uuid.UUID(depends_on_task_id))
+            return _serialize(result.model_dump())
+        except AppError as exc:
+            return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+        finally:
+            await svc.session.close()
     svc = await _get_service()
     try:
         result = await svc.add_dependency(uuid.UUID(task_id), uuid.UUID(depends_on_task_id))
@@ -273,6 +284,15 @@ async def add_task_dependency(task_id: str, depends_on_task_id: str) -> str:
 @mcp.tool()
 async def list_task_dependencies(task_id: str) -> str:
     """列出指定任务的依赖关系。"""
+    if settings.aitodo_storage_mode == "obsidian_native":
+        svc = await _get_obsidian_native_write_service()
+        try:
+            result = await svc.list_dependencies(uuid.UUID(task_id))
+            return _serialize(result.model_dump())
+        except AppError as exc:
+            return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+        finally:
+            await svc.session.close()
     svc = await _get_service()
     try:
         result = await svc.list_dependencies(uuid.UUID(task_id))
@@ -286,6 +306,15 @@ async def list_task_dependencies(task_id: str) -> str:
 @mcp.tool()
 async def remove_task_dependency(task_id: str, dependency_id: str) -> str:
     """删除指定任务的一条依赖关系。"""
+    if settings.aitodo_storage_mode == "obsidian_native":
+        svc = await _get_obsidian_native_write_service()
+        try:
+            result = await svc.remove_dependency(uuid.UUID(task_id), uuid.UUID(dependency_id))
+            return _serialize(result.model_dump())
+        except AppError as exc:
+            return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+        finally:
+            await svc.session.close()
     svc = await _get_service()
     try:
         result = await svc.remove_dependency(uuid.UUID(task_id), uuid.UUID(dependency_id))
@@ -321,6 +350,18 @@ async def add_task_comment(
     meta_data: dict | None = None,
 ) -> str:
     """为任务添加评论、进展、失败记录或系统备注。"""
+    if settings.aitodo_storage_mode == "obsidian_native":
+        svc = await _get_obsidian_native_write_service()
+        try:
+            result = await svc.add_comment(
+                uuid.UUID(task_id),
+                TaskCommentCreate(type=type, content=content, meta_data=meta_data),
+            )
+            return _serialize(result.model_dump())
+        except AppError as exc:
+            return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+        finally:
+            await svc.session.close()
     svc = await _get_service()
     try:
         result = await svc.add_comment(
@@ -337,6 +378,15 @@ async def add_task_comment(
 @mcp.tool()
 async def get_task_timeline(task_id: str) -> str:
     """获取任务评论与系统事件时间线。"""
+    if settings.aitodo_storage_mode == "obsidian_native":
+        svc = await _get_obsidian_native_write_service()
+        try:
+            result = await svc.list_comments(uuid.UUID(task_id))
+            return _serialize(result.model_dump())
+        except AppError as exc:
+            return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+        finally:
+            await svc.session.close()
     svc = await _get_service()
     try:
         result = await svc.list_comments(uuid.UUID(task_id))
@@ -454,6 +504,15 @@ async def apply_task_suggestions(task_id: str, indices: list[int]) -> str:
 @mcp.tool()
 async def plan_task_execution(task_id: str) -> str:
     """为一个任务生成结构化执行计划。"""
+    if settings.aitodo_storage_mode == "obsidian_native":
+        svc = await _get_obsidian_native_planning_service()
+        try:
+            result = await svc.generate_plan(uuid.UUID(task_id))
+            return _serialize(result.model_dump())
+        except AppError as exc:
+            return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+        finally:
+            await svc.query_service.session.close()
     svc = await _get_planning_service()
     try:
         result = await svc.generate_plan(uuid.UUID(task_id))
@@ -467,6 +526,15 @@ async def plan_task_execution(task_id: str) -> str:
 @mcp.tool()
 async def apply_task_plan(task_id: str, indices: list[int] | None = None) -> str:
     """将任务计划中的建议批量应用为子任务和依赖。"""
+    if settings.aitodo_storage_mode == "obsidian_native":
+        svc = await _get_obsidian_native_planning_service()
+        try:
+            result = await svc.apply_plan(uuid.UUID(task_id), indices)
+            return _serialize(result.model_dump())
+        except AppError as exc:
+            return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+        finally:
+            await svc.query_service.session.close()
     svc = await _get_planning_service()
     try:
         result = await svc.apply_plan(uuid.UUID(task_id), indices)
@@ -593,6 +661,22 @@ async def parse_and_create_task(
     override: dict | None = None,
 ) -> str:
     """先将自然语言解析为任务草稿，再按置信度阈值决定是否正式入库。"""
+    if settings.aitodo_storage_mode == "obsidian_native":
+        svc = await _get_obsidian_native_intake_service()
+        try:
+            result = await svc.parse_and_create(
+                text=text,
+                parent_id=uuid.UUID(parent_id) if parent_id else None,
+                min_confidence=min_confidence,
+                force_create=force_create,
+                selected_draft_index=selected_draft_index,
+                override=TaskDraftOverride(**override) if override else None,
+            )
+            return _serialize(result.model_dump())
+        except AppError as exc:
+            return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+        finally:
+            await svc.write_service.session.close()
     svc = await _get_intake_service()
     try:
         result = await svc.parse_and_create(
@@ -609,6 +693,99 @@ async def parse_and_create_task(
     finally:
         await svc.task_service.session.close()
 
+
+async def _get_obsidian_export_service() -> ObsidianExportService:
+    session = async_session_factory()
+    return ObsidianExportService(session=session, settings=settings)
+
+
+@mcp.tool()
+async def export_task_to_obsidian(task_id: str) -> str:
+    """将指定 AITodo 任务导出为 Obsidian Vault 中的 AI-Todo/tasks/<task_id>.md 文件。"""
+    svc = await _get_obsidian_export_service()
+    try:
+        result = await svc.export_task(uuid.UUID(task_id))
+        return _serialize(result)
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def export_all_tasks_to_obsidian(limit: int = 100) -> str:
+    """批量导出 AITodo 任务到 Obsidian Vault 的 AI-Todo/ 前缀下。"""
+    svc = await _get_obsidian_export_service()
+    try:
+        result = await svc.export_all_tasks(limit=limit)
+        return _serialize(result)
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+
+async def _get_obsidian_native_planning_service() -> ObsidianNativeTaskPlanningService:
+    session = async_session_factory()
+    query_service = ObsidianNativeTaskQueryService(session=session, timezone_name=settings.parsing_timezone)
+    write_service = ObsidianNativeTaskWriteService(session=session, settings=settings)
+    return ObsidianNativeTaskPlanningService(query_service=query_service, write_service=write_service)
+
+
+async def _get_obsidian_native_intake_service() -> ObsidianNativeTaskIntakeService:
+    write_service = await _get_obsidian_native_write_service()
+    return ObsidianNativeTaskIntakeService(write_service=write_service, parsing_service=_task_parsing_svc)
+
+
+async def _get_obsidian_native_write_service() -> ObsidianNativeTaskWriteService:
+    session = async_session_factory()
+    return ObsidianNativeTaskWriteService(session=session, settings=settings)
+
+
+async def _get_obsidian_index_service() -> ObsidianIndexService:
+    session = async_session_factory()
+    return ObsidianIndexService(session=session, settings=settings)
+
+
+@mcp.tool()
+async def rebuild_obsidian_task_index(prefix: str = "AI-Todo/tasks/", limit: int = 500) -> str:
+    """从 Obsidian Sync 远端文件快照下载并解析 AI-Todo Markdown，重建 AITodo 可查询索引。"""
+    svc = await _get_obsidian_index_service()
+    try:
+        result = await svc.rebuild_index(prefix=prefix, limit=limit)
+        return _serialize(result)
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
+
+
+@mcp.tool()
+async def list_obsidian_indexed_tasks(status: str | None = None, limit: int = 100) -> str:
+    """列出从 Obsidian Markdown 重建出的任务索引。"""
+    svc = await _get_obsidian_index_service()
+    try:
+        items = await svc.list_indexed_tasks(status=status, limit=limit)
+        return _serialize({
+            "items": [
+                {
+                    "task_id": item.task_id,
+                    "title": item.title,
+                    "status": item.status,
+                    "priority": item.priority,
+                    "path": item.path,
+                    "version": item.version,
+                    "content_hash": item.content_hash,
+                }
+                for item in items
+            ],
+            "total": len(items),
+        })
+    except AppError as exc:
+        return _serialize({"error": {"code": exc.code.value, "message": exc.message}})
+    finally:
+        await svc.session.close()
 
 if __name__ == "__main__":
     mcp.run()

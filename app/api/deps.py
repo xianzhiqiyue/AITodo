@@ -7,6 +7,12 @@ from app.errors import AppError, ErrorCode
 from app.services.blocked_recovery_service import BlockedRecoveryService
 from app.services.embedding_service import EmbeddingService
 from app.services.execution_suggestion_service import ExecutionSuggestionService
+from app.services.obsidian_index_service import ObsidianIndexService
+from app.services.obsidian_native_intake_service import ObsidianNativeTaskIntakeService
+from app.services.obsidian_native_planning_service import ObsidianNativeTaskPlanningService
+from app.services.obsidian_native_query_service import ObsidianNativeTaskQueryService
+from app.services.obsidian_native_write_service import ObsidianNativeTaskWriteService
+from app.services.obsidian_sync_service import ObsidianExportService
 from app.services.notification_service import (
     AlertDeliveryService,
     DingTalkNotificationProvider,
@@ -179,3 +185,49 @@ async def get_review_summary_service(
         timezone_name=settings.parsing_timezone,
     )
     return ReviewSummaryService(task_service=task_service)
+
+
+async def get_obsidian_export_service(
+    session: AsyncSession = Depends(get_async_session),
+    settings: Settings = Depends(get_settings),
+) -> ObsidianExportService:
+    return ObsidianExportService(session=session, settings=settings)
+
+
+async def get_obsidian_index_service(
+    session: AsyncSession = Depends(get_async_session),
+    settings: Settings = Depends(get_settings),
+) -> ObsidianIndexService:
+    return ObsidianIndexService(session=session, settings=settings)
+
+
+async def get_obsidian_native_query_service(
+    session: AsyncSession = Depends(get_async_session),
+    settings: Settings = Depends(get_settings),
+) -> ObsidianNativeTaskQueryService:
+    return ObsidianNativeTaskQueryService(session=session, timezone_name=settings.parsing_timezone)
+
+
+async def get_obsidian_native_write_service(
+    session: AsyncSession = Depends(get_async_session),
+    settings: Settings = Depends(get_settings),
+) -> ObsidianNativeTaskWriteService:
+    return ObsidianNativeTaskWriteService(session=session, settings=settings)
+
+
+async def get_obsidian_native_intake_service(
+    session: AsyncSession = Depends(get_async_session),
+    settings: Settings = Depends(get_settings),
+) -> ObsidianNativeTaskIntakeService:
+    write_service = ObsidianNativeTaskWriteService(session=session, settings=settings)
+    parsing_service = TaskParsingService(settings)
+    return ObsidianNativeTaskIntakeService(write_service=write_service, parsing_service=parsing_service)
+
+
+async def get_obsidian_native_planning_service(
+    session: AsyncSession = Depends(get_async_session),
+    settings: Settings = Depends(get_settings),
+) -> ObsidianNativeTaskPlanningService:
+    query_service = ObsidianNativeTaskQueryService(session=session, timezone_name=settings.parsing_timezone)
+    write_service = ObsidianNativeTaskWriteService(session=session, settings=settings)
+    return ObsidianNativeTaskPlanningService(query_service=query_service, write_service=write_service)

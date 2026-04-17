@@ -330,3 +330,90 @@ class HealthResponse(BaseModel):
     parsing_service: str
     embedding_service: str
     version: str
+
+class ObsidianFileBindingResponse(BaseModel):
+    id: uuid.UUID
+    entity_type: str
+    entity_id: str
+    vault_id: str
+    path: str
+    file_id: str
+    version: int
+    content_hash: str
+    last_exported_at: datetime | None
+    last_imported_at: datetime | None
+    meta_data: dict
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ObsidianExportTaskResponse(BaseModel):
+    entity_type: str
+    entity_id: str
+    vault_id: str
+    path: str
+    file_id: str
+    version: int
+    content_hash: str
+    checkpoint: str
+    op: str
+    exported_at: datetime | None
+
+
+class ObsidianExportAllRequest(BaseModel):
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class ObsidianExportAllResponse(BaseModel):
+    exported_count: int
+    items: list[ObsidianExportTaskResponse]
+
+
+class ObsidianBindingListResponse(BaseModel):
+    items: list[ObsidianFileBindingResponse]
+    total: int
+
+class ObsidianTaskIndexResponse(BaseModel):
+    id: uuid.UUID
+    task_id: str
+    vault_id: str
+    path: str
+    file_id: str
+    version: int
+    content_hash: str
+    title: str
+    description: str | None
+    status: str
+    priority: int
+    due_at: datetime | None
+    tags: list[str]
+    parent_id: str | None
+    depends_on: list[str]
+    source_updated_at: datetime | None
+    parsed_at: datetime
+    meta_data: dict
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ObsidianIndexRebuildRequest(BaseModel):
+    prefix: str = Field(default="AI-Todo/tasks/", min_length=1, max_length=4096)
+    limit: int = Field(default=500, ge=1, le=5000)
+
+
+class ObsidianIndexRebuildResponse(BaseModel):
+    vault_id: str
+    checkpoint: str
+    scanned: int
+    indexed: int
+    skipped: int
+    errors: list[dict[str, str]]
+
+
+class ObsidianTaskIndexListResponse(BaseModel):
+    items: list[ObsidianTaskIndexResponse]
+    total: int
