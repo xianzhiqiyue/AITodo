@@ -11,7 +11,7 @@ from datetime import datetime
 from mcp.server.fastmcp import FastMCP
 
 from app.config import get_settings
-from app.database import async_session_factory
+from app.database import get_session_factory
 from app.services.embedding_service import EmbeddingService
 from app.services.task_service import TaskService
 from app.schemas import SubTaskInput, TaskCreate, TaskUpdate
@@ -22,9 +22,13 @@ settings = get_settings()
 _embedding_svc = EmbeddingService(settings) if settings.embedding_api_key else None
 
 
+_is_postgres = "postgresql" in settings.database_url
+
+
 async def _get_service() -> TaskService:
-    session = async_session_factory()
-    return TaskService(session=session, embedding_service=_embedding_svc)
+    factory = get_session_factory()
+    session = factory()
+    return TaskService(session=session, embedding_service=_embedding_svc, is_postgres=_is_postgres)
 
 
 def _serialize(obj) -> str:
@@ -37,7 +41,7 @@ async def upsert_task(
     id: str | None = None,
     description: str | None = None,
     status: str | None = None,
-    priority: int = 3,
+    priority: int | None = None,
     due_at: str | None = None,
     parent_id: str | None = None,
     tags: list[str] | None = None,
@@ -73,7 +77,7 @@ async def upsert_task(
                     title=title,
                     description=description,
                     status=status,
-                    priority=priority,
+                    priority=priority or 3,
                     due_at=parsed_due,
                     parent_id=parsed_parent,
                     tags=tags or [],

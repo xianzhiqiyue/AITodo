@@ -162,3 +162,87 @@ async def test_tags_filter(task_service: TaskService):
         status_filter="all", tags=["frontend"]
     )
     assert all("frontend" in t.tags for t in result.tasks)
+
+
+# --- Regression tests for code review findings ---
+
+
+async def test_circular_self_reference_blocked(task_service: TaskService):
+    """Setting parent_id to self must be rejected."""
+    task = await task_service.upsert_task(data=TaskCreate(title="Self-ref"))
+    with pytest.raises(AppError) as exc_info:
+        await task_service.upsert_task(
+            update_data=TaskUpdate(parent_id=task.id),
+            task_id=task.id,
+        )
+    assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
+    assert "own parent" in exc_info.value.message.lower()
+
+
+async def test_circular_descendant_reference_blocked(task_service: TaskService):
+    """Setting parent_id to a descendant must be rejected (cycle detection)."""
+    a = await task_service.upsert_task(data=TaskCreate(title="A"))
+    b = await task_service.upsert_task(data=TaskCreate(title="B", parent_id=a.id))
+    c = await task_service.upsert_task(data=TaskCreate(title="C", parent_id=b.id))
+
+    with pytest.raises(AppError) as exc_info:
+        await task_service.upsert_task(
+            update_data=TaskUpdate(parent_id=c.id),
+            task_id=a.id,
+        )
+    assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
+    assert "circular" in exc_info.value.message.lower()
+
+
+async def test_update_preserves_priority(task_service: TaskService):
+    """Updating status must not reset priority (MCP regression)."""
+    task = await task_service.upsert_task(
+        data=TaskCreate(title="High prio", priority=1)
+    )
+    assert task.priority == 1
+
+    updated = await task_service.upsert_task(
+        update_data=TaskUpdate(status="in_progress"),
+        task_id=task.id,
+    )
+    assert updated.priority == 1
+
+
+async def test_invalid_status_filter_rejected(task_service: TaskService):
+    """Invalid status_filter value must raise VALIDATION_ERROR, not silently ignore."""
+    await task_service.upsert_task(data=TaskCreate(title="Something"))
+
+    with pytest.raises(AppError) as exc_info:
+        await task_service.get_task_context(status_filter="oops")
+    assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
+    assert "status_filter" in exc_info.value.message.lower()
+
+
+async def test_unlink_parent_id(task_service: TaskService):
+    """Setting parent_id to None via explicit field should unlink the child."""
+    parent = await task_service.upsert_task(data=TaskCreate(title="Parent"))
+    child = await task_service.upsert_task(
+        data=TaskCreate(title="Child", parent_id=parent.id)
+    )
+    assert child.parent_id == parent.id
+
+    update = TaskUpdate.model_validate({"parent_id": None})
+    unlinked = await task_service.upsert_task(
+        update_data=update,
+        task_id=child.id,
+    )
+    assert unlinked.parent_id is None
+
+
+async def test_update_without_parent_id_preserves_it(task_service: TaskService):
+    """Updating a task without providing parent_id must NOT reset it to None."""
+    parent = await task_service.upsert_task(data=TaskCreate(title="Parent"))
+    child = await task_service.upsert_task(
+        data=TaskCreate(title="Child", parent_id=parent.id)
+    )
+
+    updated = await task_service.upsert_task(
+        update_data=TaskUpdate(title="Renamed child"),
+        task_id=child.id,
+    )
+    assert updated.parent_id == parent.id

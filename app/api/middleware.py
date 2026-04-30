@@ -1,5 +1,5 @@
 import time
-from collections import defaultdict, deque
+from collections import deque
 
 import structlog
 from fastapi import Request, Response
@@ -11,12 +11,15 @@ logger = structlog.get_logger()
 
 RATE_LIMIT = 100
 WINDOW_SECONDS = 60
+MAX_TRACKED_KEYS = 10_000
+CLEANUP_INTERVAL = 300
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
         super().__init__(app)
-        self._requests: dict[str, deque[float]] = defaultdict(deque)
+        self._requests: dict[str, deque[float]] = {}
+        self._last_cleanup = time.time()
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if request.url.path == "/health":
@@ -26,6 +29,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         key = auth[7:] if auth.startswith("Bearer ") else "anonymous"
 
         now = time.time()
+
+        if now - self._last_cleanup > CLEANUP_INTERVAL:
+            self._cleanup_stale_keys(now)
+            self._last_cleanup = now
+
+        if key not in self._requests:
+            if len(self._requests) >= MAX_TRACKED_KEYS:
+                self._cleanup_stale_keys(now)
+                if len(self._requests) >= MAX_TRACKED_KEYS:
+                    raise AppError(ErrorCode.RATE_LIMITED, "Too many requests. Please slow down.")
+            self._requests[key] = deque()
+
         window = self._requests[key]
 
         while window and window[0] < now - WINDOW_SECONDS:
@@ -36,6 +51,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         window.append(now)
         return await call_next(request)
+
+    def _cleanup_stale_keys(self, now: float) -> None:
+        stale_keys = [
+            k for k, v in self._requests.items()
+            if not v or v[-1] < now - WINDOW_SECONDS
+        ]
+        for k in stale_keys:
+            del self._requests[k]
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):

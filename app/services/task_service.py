@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 VALID_STATUSES = {"todo", "in_progress", "done", "blocked"}
+VALID_STATUS_FILTERS = {"open", "todo", "in_progress", "done", "blocked", "all"}
 MAX_DEPTH = 5
 
 
@@ -51,12 +52,19 @@ class TaskService:
         return task
 
     async def _get_depth(self, parent_id: uuid.UUID | None) -> int:
-        """Calculate current depth of a parent chain (root = 1)."""
+        """Calculate current depth of a parent chain (root = 1).
+
+        Uses a visited set to detect cycles and prevent infinite loops.
+        """
         if parent_id is None:
             return 0
         depth = 0
         current_id = parent_id
+        visited: set[uuid.UUID] = set()
         while current_id is not None:
+            if current_id in visited:
+                raise AppError(ErrorCode.VALIDATION_ERROR, "Circular parent chain detected.")
+            visited.add(current_id)
             depth += 1
             if depth > MAX_DEPTH:
                 return depth
@@ -68,6 +76,25 @@ class TaskService:
                 raise AppError(ErrorCode.TASK_NOT_FOUND, f"Parent task '{current_id}' does not exist.")
             current_id = row[0]
         return depth
+
+    async def _is_descendant_of(self, task_id: uuid.UUID, ancestor_id: uuid.UUID) -> bool:
+        """Check if ancestor_id is a descendant of task_id (would create a cycle)."""
+        visited: set[uuid.UUID] = set()
+        queue = [task_id]
+        while queue:
+            current = queue.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            result = await self.session.execute(
+                select(Task.id).where(Task.parent_id == current)
+            )
+            for row in result.all():
+                child_id = row[0]
+                if child_id == ancestor_id:
+                    return True
+                queue.append(child_id)
+        return False
 
     async def _validate_status_transition(self, task: Task, new_status: str) -> None:
         if new_status not in VALID_STATUSES:
@@ -158,11 +185,19 @@ class TaskService:
         if data.tags is not None:
             task.tags = data.tags
 
-        if data.parent_id is not None:
-            depth = await self._get_depth(data.parent_id)
-            if depth + 1 > MAX_DEPTH:
-                raise AppError(ErrorCode.MAX_DEPTH_EXCEEDED, f"Maximum nesting depth of {MAX_DEPTH} exceeded.")
-            task.parent_id = data.parent_id
+        if "parent_id" in data.model_fields_set:
+            new_parent = data.parent_id
+            if new_parent is None:
+                task.parent_id = None
+            else:
+                if new_parent == task_id:
+                    raise AppError(ErrorCode.VALIDATION_ERROR, "A task cannot be its own parent.")
+                if await self._is_descendant_of(task_id, new_parent):
+                    raise AppError(ErrorCode.VALIDATION_ERROR, "Cannot set parent: would create a circular reference.")
+                depth = await self._get_depth(new_parent)
+                if depth + 1 > MAX_DEPTH:
+                    raise AppError(ErrorCode.MAX_DEPTH_EXCEEDED, f"Maximum nesting depth of {MAX_DEPTH} exceeded.")
+                task.parent_id = new_parent
 
         if data.meta_data is not None:
             task.meta_data = {**task.meta_data, **data.meta_data}
@@ -312,11 +347,17 @@ class TaskService:
         tags: list[str] | None,
         parent_id: uuid.UUID | None,
     ) -> list:
+        if status_filter not in VALID_STATUS_FILTERS:
+            raise AppError(
+                ErrorCode.VALIDATION_ERROR,
+                f"Invalid status_filter '{status_filter}'. Must be one of: {sorted(VALID_STATUS_FILTERS)}",
+            )
+
         conditions = []
 
         if status_filter == "open":
             conditions.append(Task.status.in_(["todo", "in_progress"]))
-        elif status_filter != "all" and status_filter in VALID_STATUSES:
+        elif status_filter != "all":
             conditions.append(Task.status == status_filter)
 
         if tags:
@@ -348,7 +389,15 @@ class TaskService:
         logger.info("task_deleted", task_id=str(task_id), cascade=cascade, deleted_count=deleted_count)
         return DeleteResponse(deleted_count=deleted_count)
 
-    async def _count_descendants(self, task_id: uuid.UUID) -> int:
+    async def _count_descendants(
+        self, task_id: uuid.UUID, _visited: set[uuid.UUID] | None = None
+    ) -> int:
+        if _visited is None:
+            _visited = set()
+        if task_id in _visited:
+            return 0
+        _visited.add(task_id)
+
         result = await self.session.execute(
             select(func.count()).select_from(Task).where(Task.parent_id == task_id)
         )
@@ -361,7 +410,7 @@ class TaskService:
             select(Task.id).where(Task.parent_id == task_id)
         )
         for row in child_result.all():
-            total += await self._count_descendants(row[0])
+            total += await self._count_descendants(row[0], _visited)
         return total
 
     async def decompose_task(

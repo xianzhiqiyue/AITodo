@@ -1,5 +1,8 @@
 import asyncio
+import os
 from collections.abc import AsyncGenerator
+
+os.environ.setdefault("API_KEY", "test-key")
 
 import pytest
 import pytest_asyncio

@@ -103,3 +103,43 @@ async def test_task_not_found(client: AsyncClient):
     resp = await client.get("/api/v1/tasks/00000000-0000-0000-0000-000000000000")
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "TASK_NOT_FOUND"
+
+
+# --- Regression tests for code review findings ---
+
+
+async def test_circular_self_ref_via_api(client: AsyncClient):
+    create_resp = await client.post("/api/v1/tasks", json={"title": "Self"})
+    task_id = create_resp.json()["id"]
+
+    resp = await client.put(f"/api/v1/tasks/{task_id}", json={"parent_id": task_id})
+    assert resp.status_code == 400
+    assert "own parent" in resp.json()["error"]["message"].lower()
+
+
+async def test_invalid_status_filter_via_api(client: AsyncClient):
+    resp = await client.get("/api/v1/tasks", params={"status_filter": "oops"})
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+async def test_unlink_parent_via_api(client: AsyncClient):
+    parent_resp = await client.post("/api/v1/tasks", json={"title": "P"})
+    parent_id = parent_resp.json()["id"]
+
+    child_resp = await client.post("/api/v1/tasks", json={"title": "C", "parent_id": parent_id})
+    child_id = child_resp.json()["id"]
+    assert child_resp.json()["parent_id"] == parent_id
+
+    resp = await client.put(f"/api/v1/tasks/{child_id}", json={"parent_id": None})
+    assert resp.status_code == 200
+    assert resp.json()["parent_id"] is None
+
+
+async def test_update_only_status_preserves_priority_via_api(client: AsyncClient):
+    create_resp = await client.post("/api/v1/tasks", json={"title": "Prio", "priority": 1})
+    task_id = create_resp.json()["id"]
+
+    resp = await client.put(f"/api/v1/tasks/{task_id}", json={"status": "in_progress"})
+    assert resp.status_code == 200
+    assert resp.json()["priority"] == 1
